@@ -837,6 +837,11 @@ namespace IngameScript
             float deltaY = targetY - startY;
             float deltaZ = targetZ - startZ;
             int steps = (int)Math.Ceiling(Math.Sqrt(deltaX * deltaX + deltaY * deltaY) / stepSize);
+            if (steps == 0 && deltaZ != 0)
+            {
+                points.Add(new List<float> { targetX, targetY, targetZ });
+                return points;
+            }
             for (int i = 1; i <= steps; i++)
             {
                 float t = (float)i / steps;
@@ -851,17 +856,13 @@ namespace IngameScript
         void QueueMove(int targetX, int targetY, float targetZ, float time, string description = "", Action onFinish = null)
         {
             List<List<float>> travelPoints = GetTravelPoints(welderX, welderY, welderZ, targetX, targetY, targetZ);
+            if (travelPoints.Count == 0)
+            {
+                Echo("No travel points generated for move command!");
+                return;
+            }
             float perPointTime = time / travelPoints.Count;
             int i = 1;
-            Echo($"Current welder position: ({welderX}, {welderY}, {welderZ})");
-            Echo($"Queuing move to ({targetX}, {targetY}, {targetZ}) in {time} s over {travelPoints.Count} points.");
-            Echo("Travel points:");
-            foreach (List<float> point in travelPoints)
-            {
-                Echo($"  Point {i}: ({point[0]}, {point[1]}, {point[2]})");
-                i++;
-            }
-            i = 1;
             foreach (List<float> point in travelPoints)
             {
                 float pointX = point[0];
