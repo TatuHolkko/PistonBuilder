@@ -235,6 +235,53 @@ namespace IngameScript
                 }
             }
         }
+        void DebugFindClosestGridByPistonExtensions()
+        {
+            float closestDistance = float.MaxValue;
+            int bestX = -1;
+            int bestY = -1;
+
+            for (int y = 0; y < areaHeight; y++)
+            {
+                for (int x = 0; x < areaWidth; x++)
+                {
+                    Dictionary<Corner, float> extensions = PistonExtensions(x, y);
+                    bool valid = true;
+                    float distSum = 0f;
+                    foreach (Corner corner in corners)
+                    {
+                        float extension = extensions[corner];
+                        if (extension < 0f || extension > 10f)
+                        {
+                            valid = false;
+                            break;
+                        }
+                        foreach (IMyPistonBase piston in horizontalPistonLists[corner])
+                        {
+                            float diff = piston.CurrentPosition - extension;
+                            distSum += diff * diff;
+                        }
+                    }
+                    if (!valid) continue;
+                    if (distSum < closestDistance)
+                    {
+                        closestDistance = distSum;
+                        bestX = x;
+                        bestY = y;
+                    }
+                }
+            }
+
+            if (bestX == -1)
+            {
+                Echo("DebugFindClosestGrid: no valid grid point found (all extensions out of range)");
+                return;
+            }
+
+            double gridDistance = Math.Sqrt(Math.Pow(bestX - welderX, 2) + Math.Pow(bestY - welderY, 2));
+            Echo($"DebugFindClosestGrid: closest = ({bestX}, {bestY}) with mismatch {closestDistance:F4}");
+            Echo($"Current welder pos = ({welderX}, {welderY}), grid distance = {gridDistance:F2}");
+        }
 
         void InitHeightMap()
         {
