@@ -111,7 +111,7 @@ namespace IngameScript
         List<IMyLightingBlock> statusLights = new List<IMyLightingBlock>();
         class TaskItem
         {
-            public Func<float> execute = () => 0f; // returns time required to complete task
+            public Func<float> execute = () => -1f; // returns time required to complete task
             public Action finish = () => { }; // called when task is finished
             public string description = "Null task"; // description for debug screen
         }
@@ -126,10 +126,12 @@ namespace IngameScript
         // Height map of scanned area, -1 = unscanned, -2 = unreachable
         List<List<float>> heightMap = new List<List<float>>();
 
+        // Last known welder position
         float welderX = -1; // blocks from top left corner
         float welderY = -1; // blocks from top left corner
         float welderZ = -1f; // blocks from base level
 
+        // When pistons are moving, the target position
         float welderTargetX = -1; // blocks from top left corner
         float welderTargetY = -1; // blocks from top left corner
         float welderTargetZ = -1f; // blocks from base level
@@ -1068,6 +1070,10 @@ namespace IngameScript
             {
                 currentTask = taskQueue.Dequeue();
                 taskTimeLeft = currentTask.execute();
+                if (taskTimeLeft == 0f)
+                {
+                    currentTask.finish();
+                }
             }
             else if (heightScanInProgress)
             {
