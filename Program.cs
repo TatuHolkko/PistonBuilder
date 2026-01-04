@@ -244,7 +244,7 @@ namespace IngameScript
         }
         void DebugFindClosestGridByPistonExtensions()
         {
-            float closestDistance = float.MaxValue;
+            float smallestError = float.MaxValue;
             int bestX = -1;
             int bestY = -1;
 
@@ -254,7 +254,7 @@ namespace IngameScript
                 {
                     Dictionary<Corner, float> extensions = PistonExtensions(x, y);
                     bool valid = true;
-                    float distSum = 0f;
+                    float squaredErrorSum = 0f;
                     foreach (Corner corner in corners)
                     {
                         float extension = extensions[corner];
@@ -266,13 +266,13 @@ namespace IngameScript
                         foreach (IMyPistonBase piston in horizontalPistonLists[corner])
                         {
                             float diff = piston.CurrentPosition - extension;
-                            distSum += diff * diff;
+                            squaredErrorSum += diff * diff;
                         }
                     }
                     if (!valid) continue;
-                    if (distSum < closestDistance)
+                    if (squaredErrorSum < smallestError)
                     {
-                        closestDistance = distSum;
+                        smallestError = squaredErrorSum;
                         bestX = x;
                         bestY = y;
                     }
@@ -286,8 +286,9 @@ namespace IngameScript
             }
 
             double gridDistance = Math.Sqrt(Math.Pow(bestX - welderX, 2) + Math.Pow(bestY - welderY, 2));
-            Echo($"DebugFindClosestGrid: closest = ({bestX}, {bestY}) with mismatch {closestDistance:F4}");
+            Echo($"DebugFindClosestGrid: closest = ({bestX}, {bestY}) with squared error sum {smallestError:F4}");
             Echo($"Current welder pos = ({welderX}, {welderY}), grid distance = {gridDistance:F2}");
+            Echo($"Current accuracy = {CalculateAccuracy(welderX, welderY, welderZ):P2}");
         }
 
         void InitHeightMap()
@@ -955,6 +956,10 @@ namespace IngameScript
                 }
                 Echo("Initiated height scan process.");
                 InitiateHeightScanProcess();
+            }
+            else if (argument == "loc")
+            {
+                DebugFindClosestGridByPistonExtensions();
             }
             else
             {
