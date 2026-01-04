@@ -49,6 +49,8 @@ namespace IngameScript
         const float ceilingHeight = 20f; // meters
         const float floorHeight = 0; // meters
 
+        float sensorOffset = -1f; // sensor distance to ground at Z = 0, -1 means auto-detect during init
+
         // Naming conventions
         const string namePrefix = "[BP] ";
         const string pistonNameBase = "Pist: ";
@@ -81,6 +83,7 @@ namespace IngameScript
         const int welderSize = 1; // blocks in each dimension from the center, e.g. 1 = 3x3
         const float verticalPistonVelocity = 1f; // meters per second
         const float horizontalPistonVelocity = 1f; // meters per second
+        const float heightScanStep = 0.5f; // meters per sensor reading step
         const float maxZ = (ceilingHeight - floorHeight) / cubeSize; // maximum welder Z height in blocks
         enum Corner
         {
@@ -142,6 +145,7 @@ namespace IngameScript
 
         bool heightScanInProgress = false;
         bool scanDownInProgress = false;
+        bool sensorOffsetAutoDetectInProgress = false;
         bool safetyLock = true;
 
         public Program()
@@ -458,6 +462,10 @@ namespace IngameScript
             sensor.DetectLargeShips = true;
             sensor.DetectSmallShips = true;
             sensor.DetectStations = true;
+            sensor.DetectOwner = true;
+            sensor.DetectFriendly = true;
+            sensor.DetectNeutral = true;
+            sensor.DetectEnemy = true;
 
             sensor.DetectFloatingObjects = false;
             sensor.DetectAsteroids = false;
@@ -581,13 +589,48 @@ namespace IngameScript
             return actualTime;
         }
 
+        void InitiateAutoCalculateSensorOffset()
+        {
+            sensorOffset = -1f;
+            sensorOffsetAutoDetectInProgress = true;
+            int welderX = (int)Math.Round(this.welderX);
+            int welderY = (int)Math.Round(this.welderY);
+            QueueMove(welderX, welderY, 0f, 1f,
+                description: "Moving welder to Z=0 for sensor offset calibration",
+                onFinish: InitiateScanDownProcess);
+        }
+
+        void AutoCalculateSensorOffsetStep()
+        {
+            float maxOffset = 3 * cubeSize; // sensor offset arbitrarily assumed within 7.5m
+            if(ReadSensors(0.01f, maxOffset))
+            {
+                if (sensorReadings[Side.Top] == maxOffset ||
+                    sensorReadings[Side.Bottom] == maxOffset ||
+                    sensorReadings[Side.Left] == maxOffset ||
+                    sensorReadings[Side.Right] == maxOffset)
+                {
+                    throw new Exception($"Auto-calculation of sensor offset failed: one or more sensors did not detect ground within max range {maxOffset}m.");
+                }
+                float topHeight = sensorReadings[Side.Top];
+                float bottomHeight = sensorReadings[Side.Bottom];
+                float leftHeight = sensorReadings[Side.Left];
+                float rightHeight = sensorReadings[Side.Right];
+                float averageHeight = (topHeight + bottomHeight + leftHeight + rightHeight) / 4f;
+                sensorOffset = averageHeight;
+                Echo($"Auto-calculated sensor offset: {sensorOffset:F2} m");
+                sensorOffsetAutoDetectInProgress = false;
+                scanDownInProgress = false;
+            }
+        }
+
         void InitiateScanDownProcess()
         {
             sensorReadings[Side.Top] = -1f;
             sensorReadings[Side.Bottom] = -1f;
             sensorReadings[Side.Left] = -1f;
             sensorReadings[Side.Right] = -1f;
-            sensorRange = 0f;
+            sensorRange = sensorOffset >= 0f ? sensorOffset : 0f;
             welderSensors[Side.Top].FrontExtend = sensorRange;
             welderSensors[Side.Bottom].FrontExtend = sensorRange;
             welderSensors[Side.Left].FrontExtend = sensorRange;
@@ -595,60 +638,83 @@ namespace IngameScript
             scanDownInProgress = true;
         }
 
-        bool ReadSensors()
+        bool ReadSensors(float step, float maxDistance)
         {
-            bool allSidesMeasured = true;
+            int measuredSides = 0;
             foreach (Side side in sides)
             {
                 if (sensorReadings[side] >= 0f)
                 {
+                    measuredSides++;
                     continue;
                 }
-                allSidesMeasured = false;
-                IMySensorBlock sensor = welderSensors[side];
-                if (sensor.IsActive)
+                if (welderSensors[side].IsActive)
                 {
-                    float detectedAt = welderZ - sensorRange;
-                    sensorReadings[side] = detectedAt;
-                }
-                else
-                {
-                    sensorRange += 0.5f;
-                    if (sensorRange > welderZ)
-                    {
-                        sensorReadings[side] = 0; // No obstacle detected within range
-                        continue;
-                    }
-                    sensor.FrontExtend = sensorRange;
+                    sensorReadings[side] = sensorRange;
+                    measuredSides++;
                 }
             }
-            return allSidesMeasured;
+            if (measuredSides == sides.Count)
+            {
+                return true;
+            }
+            if (sensorRange >= maxDistance)
+            {
+                for (Side side = Side.Top; side <= Side.Right; side++)
+                {
+                    if (sensorReadings[side] < 0f)
+                    {
+                        sensorReadings[side] = maxDistance; // no detection within max range
+                    }
+                }
+                return true;
+            }
+            sensorRange += step;
+            welderSensors[Side.Top].FrontExtend = sensorRange;
+            welderSensors[Side.Bottom].FrontExtend = sensorRange;
+            welderSensors[Side.Left].FrontExtend = sensorRange;
+            welderSensors[Side.Right].FrontExtend = sensorRange;
+
+            return false;
         }
 
-        bool ScanDownStep()
+        bool HeightScanDownStep(float step, float maxDistance)
         {
-            if (ReadSensors())
+            if (ReadSensors(step, maxDistance))
             {
                 int welderX = (int)Math.Round(this.welderX);
                 int welderY = (int)Math.Round(this.welderY);
-                List<int> point = new List<int> { welderX + 1, welderY };
-                heightMap[point[1]][point[0]] = sensorReadings[Side.Right];
-                point = new List<int> { welderX - 1, welderY };
-                heightMap[point[1]][point[0]] = sensorReadings[Side.Left];
-                point = new List<int> { welderX, welderY + 1 };
-                heightMap[point[1]][point[0]] = sensorReadings[Side.Bottom];
-                point = new List<int> { welderX, welderY - 1 };
-                heightMap[point[1]][point[0]] = sensorReadings[Side.Top];
+                SetEmptyHeightMapPoint(welderX + 1, welderY, DetectionHeight(sensorReadings[Side.Right]));
+                SetEmptyHeightMapPoint(welderX - 1, welderY, DetectionHeight(sensorReadings[Side.Left]));
+                SetEmptyHeightMapPoint(welderX, welderY + 1, DetectionHeight(sensorReadings[Side.Bottom]));
+                SetEmptyHeightMapPoint(welderX, welderY - 1, DetectionHeight(sensorReadings[Side.Top]));
                 return true;
             }
             return false;
+        }
+        float DetectionHeight(float sensorReadout)
+        {
+            if (sensorOffset < 0f)
+            {
+                throw new Exception("Sensor offset not set, cannot calculate detection height!");
+            }
+            float height = welderZ * cubeSize - (sensorReadout - sensorOffset);
+            return Math.Max(0f, height);
+        }
+        void SetEmptyHeightMapPoint(int x, int y, float height)
+        {
+            if (heightMap[y][x] >= 0f)
+            {
+                return;
+            }
+            heightMap[y][x] = height;
         }
 
         bool HeightScanStep()
         {
             if (scanDownInProgress)
             {
-                if (ScanDownStep())
+                if (HeightScanDownStep(heightScanStep, welderZ * cubeSize + sensorOffset))
                 {
                     scanDownInProgress = false;
                 }
@@ -961,8 +1027,28 @@ namespace IngameScript
                     Echo("Height scan already in progress!");
                     return;
                 }
+                if (sensorOffset < 0f)
+                {
+                    Echo("Cannot start height scan: Sensor offset not set! Run 'autosensor' command first.");
+                    return;
+                }
                 Echo("Initiated height scan process.");
                 InitiateHeightScanProcess();
+            }
+            else if (argument == "autosensor")
+            {
+                if (safetyLock)
+                {
+                    Echo("Cannot auto-calculate sensor offset: Safety lock is enabled! Run 'unlock' to proceed.");
+                    return;
+                }
+                if (sensorOffsetAutoDetectInProgress)
+                {
+                    Echo("Sensor offset auto-calculation already in progress!");
+                    return;
+                }
+                Echo("Initiated sensor offset auto-calculation process.");
+                InitiateAutoCalculateSensorOffset();
             }
             else if (argument == "loc")
             {
@@ -994,7 +1080,7 @@ namespace IngameScript
                     {
                         if (heightMap[y][x] >= 0f)
                         {
-                            line += Math.Round(heightMap[y][x]).ToString() + " ";
+                            line += Math.Ceiling(heightMap[y][x]).ToString() + " ";
                         }
                         else
                         {
@@ -1018,6 +1104,9 @@ namespace IngameScript
             screen.WriteText($"Accuracy to Pos: {CalculateAccuracy(welderX, welderY, welderZ):P2}\n", true);
             screen.WriteText($"Welder Target:   ({welderTargetX}, {welderTargetY}, {welderTargetZ:f2})\n", true);
             screen.WriteText($"Accuracy to Target: {CalculateAccuracy(welderTargetX, welderTargetY, welderTargetZ):P2}\n", true);
+            screen.WriteText($"Sensor Offset: {sensorOffset:f4} m\n", true);
+            screen.WriteText($"Sensor Range: {sensorRange:f2} m\n", true);
+            screen.WriteText($"Sensor Readings: T:{sensorReadings[Side.Top]:f2}, B:{sensorReadings[Side.Bottom]:f2}, L:{sensorReadings[Side.Left]:f2}, R:{sensorReadings[Side.Right]:f2}\n", true);
             screen.WriteText($"Task Queue: {taskQueue.Count} tasks\n", true);
             if (taskTimeLeft > 0)
             {
@@ -1026,9 +1115,11 @@ namespace IngameScript
             }
             else if (heightScanInProgress)
             {
-                screen.WriteText("Height scan in progress:\n", true);
-                screen.WriteText($"Sensor Range: {sensorRange:f2} m\n", true);
-                screen.WriteText($"Sensor Readings: {sensorReadings[Side.Top]:f2}, {sensorReadings[Side.Bottom]:f2}, {sensorReadings[Side.Left]:f2}, {sensorReadings[Side.Right]:f2}\n", true);
+                screen.WriteText("Height scan in progress...\n", true);
+            }
+            else if (sensorOffsetAutoDetectInProgress)
+            {
+                screen.WriteText("Auto-calculating sensor offset...\n", true);
             }
             else
             {
@@ -1148,6 +1239,10 @@ namespace IngameScript
                 {
                     currentTask.finish();
                 }
+            }
+            else if (sensorOffsetAutoDetectInProgress)
+            {
+                AutoCalculateSensorOffsetStep();
             }
             else if (heightScanInProgress)
             {
