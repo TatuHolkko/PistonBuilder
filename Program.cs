@@ -939,7 +939,7 @@ namespace IngameScript
                     Echo("Cannot move welder: Height scan in progress!");
                     return;
                 }
-                if(ParseMoveCommand(argument))
+                if (ParseMoveCommand(argument))
                 {
                     Echo("Queued move command: " + argument.Substring(5));
                 }
@@ -1074,22 +1074,23 @@ namespace IngameScript
             QueueEqualizeAllPistons(0f);
             QueueMove((int)Math.Round(welderX), (int)Math.Round(welderY), welderZ, 1f,
                 description: "Final move to current welder position after piston equalization",
-                onFinish: () => {
-                        if (!NeedsInitialization())
+                onFinish: () =>
+                {
+                    if (!NeedsInitialization())
+                    {
+                        Echo("Pistons successfully initialized.");
+                        if (!Me.CustomData.Contains(autoUnlockCommand))
                         {
-                            Echo("Pistons successfully initialized.");
-                            if (!Me.CustomData.Contains(autoUnlockCommand))
-                            {
-                                safetyLock = true;
-                                Echo("Safety lock enabled after initialization. Run 'unlock' command to proceed.");
-                            }
-                        }
-                        else
-                        {
-                            Echo("Piston initialization failed: Pistons are still misaligned!");
                             safetyLock = true;
+                            Echo("Safety lock enabled after initialization. Run 'unlock' command to proceed.");
                         }
-                    });
+                    }
+                    else
+                    {
+                        Echo("Piston initialization failed: Pistons are still misaligned!");
+                        safetyLock = true;
+                    }
+                });
         }
 
         bool NeedsInitialization()
