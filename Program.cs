@@ -71,6 +71,9 @@ namespace IngameScript
         const string mapLCDBlockName = "Control Seat";
         const int mapLCDSurfaceIndex = 1;
 
+        const string autoInitCommand = "autoinit";
+        const string autoUnlockCommand = "autounlock";
+
         /// DO NOT CHANGE BELOW THIS LINE ///
 
         const float cubeSize = 2.5f; // meters
@@ -192,6 +195,10 @@ namespace IngameScript
             if (welderX == -1 || welderY == -1)
             {
                 throw new Exception("No reachable welder position found!");
+            }
+            if (Me.CustomData.Contains(autoInitCommand))
+            {
+                InitTasks();
             }
         }
 
@@ -1045,24 +1052,30 @@ namespace IngameScript
 
         void InitTasks()
         {
+            safetyLock = false;
+            Echo("Unlocking safety lock for initialization.");
             if (!NeedsInitialization())
             {
                 Echo("Pistons are already initialized.");
                 return;
             }
-            QueueEqualizeAllPistons(1f);
-            safetyLock = false;
+            QueueEqualizeAllPistons(0f);
             QueueMove((int)Math.Round(welderX), (int)Math.Round(welderY), welderZ, 1f,
                 description: "Final move to current welder position after piston equalization",
                 onFinish: () => {
-                        safetyLock = true;
                         if (!NeedsInitialization())
                         {
                             Echo("Pistons successfully initialized.");
+                            if (!Me.CustomData.Contains(autoUnlockCommand))
+                            {
+                                safetyLock = true;
+                                Echo("Safety lock enabled after initialization. Run 'unlock' command to proceed.");
+                            }
                         }
                         else
                         {
                             Echo("Piston initialization failed: Pistons are still misaligned!");
+                            safetyLock = true;
                         }
                     });
         }
