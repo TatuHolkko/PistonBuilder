@@ -37,17 +37,17 @@ namespace IngameScript
 
         // Number of blocks between horizontal base hinges (including the corners)
         // from which the horizontal pistons extend towards the welder
-        const int areaWidth = 17;
-        const int areaHeight = 17;
+        const int areaWidth = 17; // blocks
+        const int areaHeight = 17; // blocks
 
         // Number of pistons per corner that connect to the welder
         const int numHorizontalPistons = 2;
         // Number of vertical pistons per corner that lift the welder
         const int numVerticalPistons = 2;
 
-        // Vertical total height limits, will be divided equally among vertical pistons
+        // Vertical total height limits measured from the plane where the pistons are fully retracted
         const float ceilingHeight = 20f; // meters
-        const float floorHeight = 2.5f; // meters
+        const float floorHeight = 0; // meters
 
         // Naming conventions
         const string namePrefix = "[BP] ";
@@ -184,7 +184,7 @@ namespace IngameScript
             };
             statusLights.Add(GetBlock(namePrefix + lightNameBase + welderTag + topTag) as IMyLightingBlock);
             statusLights.Add(GetBlock(namePrefix + lightNameBase + welderTag + bottomTag) as IMyLightingBlock);
-            welderZ = GetAverageHeight();
+            welderZ = GetAverageZ();
             welder = GetBlock(namePrefix + welderName) as IMyShipWelder;
             pbScreen = Me.GetSurface(0);
             debugScreen = (GetBlock(namePrefix + debugLCDBlockName) as IMyTextSurfaceProvider).GetSurface(debugLCDSurfaceIndex);
@@ -347,22 +347,26 @@ namespace IngameScript
                     return false;
                 }
             }
-            float perPistonHeight = (targetZ * cubeSize + floorHeight) / numVerticalPistons;
-            return reachableGridPoints[xInt][yInt] &&
-                   perPistonHeight >= floorHeight && perPistonHeight <= ceilingHeight;
+
+            if (targetZ < 0f || targetZ > maxZ)
+            {
+                Echo($"Z{(targetZ < 0 ? "-" : "+")} out of bounds");
+                return false;
+            }
+            return reachableGridPoints[yInt][xInt];
         }
 
-        float GetAverageHeight()
+        float GetAverageZ()
         {
             float totalHeight = 0f;
             foreach (Corner corner in corners)
             {
                 foreach (IMyPistonBase piston in verticalPistonLists[corner])
                 {
-                    totalHeight += piston.CurrentPosition - (floorHeight / numVerticalPistons);
+                    totalHeight += piston.CurrentPosition;
                 }
             }
-            return totalHeight / (corners.Count) / cubeSize;
+            return (totalHeight / corners.Count - floorHeight) / cubeSize;
         }
 
 
@@ -818,13 +822,13 @@ namespace IngameScript
             safetyLock = true;
         }
 
-        void ParseMoveCommand(string argument)
+        bool ParseMoveCommand(string argument)
         {
             string[] parts = argument.Substring(5).Split(' ');
             if (parts.Length != 4)
             {
                 Echo("Invalid move command format! Use: move <x> <y> <z> <time>");
-                return;
+                return false;
             }
             int targetX = int.Parse(parts[0]);
             int targetY = int.Parse(parts[1]);
@@ -833,9 +837,10 @@ namespace IngameScript
             if (!IsReachable(targetX, targetY, targetZ))
             {
                 Echo("Target position (" + targetX + ", " + targetY + ", " + targetZ + ") is not reachable!");
-                return;
+                return false;
             }
             QueueMove(targetX, targetY, targetZ, time);
+            return true;
         }
 
         List<List<float>> GetTravelPoints(float startX, float startY, float startZ, float targetX, float targetY, float targetZ, float stepSize = 2f)
@@ -934,8 +939,10 @@ namespace IngameScript
                     Echo("Cannot move welder: Height scan in progress!");
                     return;
                 }
-                ParseMoveCommand(argument);
-                Echo("Queued move command: " + argument);
+                if(ParseMoveCommand(argument))
+                {
+                    Echo("Queued move command: " + argument.Substring(5));
+                }
             }
             else if (argument == "abort")
             {
