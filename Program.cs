@@ -206,270 +206,372 @@ namespace IngameScript
             }
         }
 
-        /// <summary>
-        /// Scans the welder area grid to determine which points are reachable by the welder
-        /// based on the piston extension limits. Also finds the closest reachable point to the
-        /// real welder position.
-        /// </summary>
-        void ScanReachable()
+        void InitTasks()
         {
-            float closestDistance = float.MaxValue;
-            for (int y = 0; y < areaHeight; y++)
+            safetyLock = false;
+            Echo("Unlocking safety lock for initialization.");
+            if (!NeedsInitialization())
             {
-                reachableGridPoints.Add(new List<bool>());
-                for (int x = 0; x < areaWidth; x++)
-                {
-                    Dictionary<Corner, float> extensions = PistonExtensions(x, y);
-                    bool reachable = true;
-                    float distSum = 0f;
-                    foreach (Corner corner in corners)
-                    {
-                        float extension = extensions[corner];
-                        if (extension < 0f || extension > 10f)
-                        {
-                            reachable = false;
-                            break;
-                        }
-                        foreach (IMyPistonBase piston in horizontalPistonLists[corner])
-                        {
-                            distSum += (float)Math.Pow(Math.Abs(piston.CurrentPosition - extension), 2);
-                        }
-                    }
-                    if (distSum < closestDistance && reachable)
-                    {
-                        closestDistance = distSum;
-                        welderX = x;
-                        welderY = y;
-                    }
-                    reachableGridPoints[y].Add(reachable);
-                    heightMap[y][x] = -2f;
-                }
-            }
-        }
-        void DebugFindClosestGridByPistonExtensions()
-        {
-            float smallestError = float.MaxValue;
-            int bestX = -1;
-            int bestY = -1;
-
-            for (int y = 0; y < areaHeight; y++)
-            {
-                for (int x = 0; x < areaWidth; x++)
-                {
-                    Dictionary<Corner, float> extensions = PistonExtensions(x, y);
-                    bool valid = true;
-                    float squaredErrorSum = 0f;
-                    foreach (Corner corner in corners)
-                    {
-                        float extension = extensions[corner];
-                        if (extension < 0f || extension > 10f)
-                        {
-                            valid = false;
-                            break;
-                        }
-                        foreach (IMyPistonBase piston in horizontalPistonLists[corner])
-                        {
-                            float diff = piston.CurrentPosition - extension;
-                            squaredErrorSum += diff * diff;
-                        }
-                    }
-                    if (!valid) continue;
-                    if (squaredErrorSum < smallestError)
-                    {
-                        smallestError = squaredErrorSum;
-                        bestX = x;
-                        bestY = y;
-                    }
-                }
-            }
-
-            if (bestX == -1)
-            {
-                Echo("DebugFindClosestGrid: no valid grid point found (all extensions out of range)");
+                Echo("Pistons are already initialized.");
                 return;
             }
-
-            double gridDistance = Math.Sqrt(Math.Pow(bestX - welderX, 2) + Math.Pow(bestY - welderY, 2));
-            Echo($"DebugFindClosestGrid: closest = ({bestX}, {bestY}) with squared error sum {smallestError:F4}");
-            Echo($"Current welder pos = ({welderX}, {welderY}), grid distance = {gridDistance:F2}");
-            Echo($"Current accuracy = {CalculateAccuracy(welderX, welderY, welderZ):P2}");
+            QueueEqualizeAllPistons(0f);
+            QueueMove((int)Math.Round(welderX), (int)Math.Round(welderY), welderZ, 1f,
+                description: "Final move to current welder position after piston equalization",
+                onFinish: () =>
+                {
+                    if (!NeedsInitialization())
+                    {
+                        Echo("Pistons successfully initialized.");
+                        if (!Me.CustomData.Contains(autoUnlockCommand))
+                        {
+                            safetyLock = true;
+                            Echo("Safety lock enabled after initialization. Run 'unlock' command to proceed.");
+                        }
+                    }
+                    else
+                    {
+                        Echo("Piston initialization failed: Pistons are still misaligned!");
+                        safetyLock = true;
+                    }
+                });
         }
 
-        void InitHeightMap()
+        bool NeedsInitialization()
         {
-            heightMap.Clear();
-            for (int y = 0; y < areaHeight; y++)
-            {
-                heightMap.Add(new List<float>());
-                for (int x = 0; x < areaWidth; x++)
-                {
-                    heightMap[y].Add(-1f);
-                }
-            }
-        }
-
-        bool IsReachable(float targetX, float targetY, float targetZ)
-        {
-            float tolerance = 0.01f;
-            int xInt = (int)Math.Round(targetX);
-            int yInt = (int)Math.Round(targetY);
-            float deltaX = targetX - xInt;
-            float deltaY = targetY - yInt;
-            if (xInt < 0 || xInt >= areaWidth || yInt < 0 || yInt >= areaHeight)
-            {
-                return false;
-            }
-            if (deltaX > 0 + tolerance)
-            {
-                if (xInt + 1 >= areaWidth || !reachableGridPoints[yInt][xInt + 1])
-                {
-                    Echo("X+ out of bounds or unreachable");
-                    return false;
-                }
-            }
-            else if (deltaX < 0 - tolerance)
-            {
-                if (xInt - 1 < 0 || !reachableGridPoints[yInt][xInt - 1])
-                {
-                    Echo("X- out of bounds or unreachable");
-                    return false;
-                }
-            }
-            if (deltaY > 0 + tolerance)
-            {
-                if (yInt + 1 >= areaHeight || !reachableGridPoints[yInt + 1][xInt])
-                {
-                    Echo("Y+ out of bounds or unreachable");
-                    return false;
-                }
-            }
-            else if (deltaY < 0 - tolerance)
-            {
-                if (yInt - 1 < 0 || !reachableGridPoints[yInt - 1][xInt])
-                {
-                    Echo("Y- out of bounds or unreachable");
-                    return false;
-                }
-            }
-
-            if (targetZ < 0f || targetZ > maxZ)
-            {
-                Echo($"Z{(targetZ < 0 ? "-" : "+")} out of bounds");
-                return false;
-            }
-            return reachableGridPoints[yInt][xInt];
-        }
-
-        float GetAverageZ()
-        {
-            float totalHeight = 0f;
             foreach (Corner corner in corners)
             {
+                float averageExtension = 0f;
+                foreach (IMyPistonBase piston in horizontalPistonLists[corner])
+                {
+                    averageExtension += piston.CurrentPosition;
+                }
+                averageExtension /= horizontalPistonLists[corner].Count;
+                foreach (IMyPistonBase piston in horizontalPistonLists[corner])
+                {
+                    if (Math.Abs(piston.CurrentPosition - averageExtension) > 0.01f)
+                    {
+                        return true;
+                    }
+                }
+
+                float averageHeight = 0f;
                 foreach (IMyPistonBase piston in verticalPistonLists[corner])
                 {
-                    totalHeight += piston.CurrentPosition;
+                    averageHeight += piston.CurrentPosition;
+                }
+                averageHeight /= verticalPistonLists[corner].Count;
+                foreach (IMyPistonBase piston in verticalPistonLists[corner])
+                {
+                    if (Math.Abs(piston.CurrentPosition - averageHeight) > 0.01f)
+                    {
+                        return true;
+                    }
                 }
             }
-            return (totalHeight / corners.Count - floorHeight) / cubeSize;
+            return CalculateAccuracy(welderX, welderY, welderZ) < 0.99f;
         }
 
-
-
-        List<IMyPistonBase> GetVerticalPistons(string name)
+        public void Main(string argument, UpdateType updateSource)
         {
-            List<IMyPistonBase> pistons = new List<IMyPistonBase>();
-            for (int i = 0; i < numVerticalPistons; i++)
+            debugScreen.WriteText("", false);
+            mapScreen.WriteText("", false);
+            pbScreen.WriteText("", false);
+
+            if (!string.IsNullOrEmpty(argument))
             {
-                pistons.Add(GetBlock(name + " " + (i + 1)) as IMyPistonBase);
-                InitVerticalPiston(pistons[i]);
+                ParseCommand(argument);
             }
-            return pistons;
+
+            Update();
+
+            Prints();
+
         }
 
-        List<IMyPistonBase> GetHorizontalPistons(string name)
+        void Update()
         {
-            List<IMyPistonBase> pistons = new List<IMyPistonBase>();
-            for (int i = 0; i < numHorizontalPistons; i++)
+            if (taskTimeLeft > 0)
             {
-                pistons.Add(GetBlock(name + " " + (i + 1)) as IMyPistonBase);
-                InitHorizontalPiston(pistons[i]);
+                taskTimeLeft -= (float)Runtime.TimeSinceLastRun.TotalSeconds;
+                if (taskTimeLeft < 0)
+                {
+                    taskTimeLeft = 0f;
+                    currentTask.finish();
+                }
+                return;
             }
-            return pistons;
-        }
-
-        IMyMotorStator GetHinge(string name)
-        {
-            IMyMotorStator hinge = GetBlock(name) as IMyMotorStator;
-            InitHinge(hinge);
-            return hinge;
-        }
-
-        IMySensorBlock GetSensor(string name)
-        {
-            IMySensorBlock sensor = GetBlock(name) as IMySensorBlock;
-            InitSensor(sensor);
-            return sensor;
-        }
-
-        IMyTerminalBlock GetBlock(string name)
-        {
-            IMyTerminalBlock block = GridTerminalSystem.GetBlockWithName(name);
-            if (block == null)
+            else if (taskQueue.Count > 0)
             {
-                throw new Exception("Could not find block: " + name);
+                currentTask = taskQueue.Dequeue();
+                taskTimeLeft = currentTask.execute();
+                if (taskTimeLeft == 0f)
+                {
+                    currentTask.finish();
+                }
             }
-            return block;
+            else if (sensorOffsetAutoDetectInProgress)
+            {
+                AutoCalculateSensorOffsetStep();
+            }
+            else if (heightScanInProgress)
+            {
+                HeightScanStep();
+            }
+            UpdateStatusLights();
         }
 
-        void InitVerticalPiston(IMyPistonBase piston)
+        void ParseCommand(string argument)
         {
-            float minPerPistonHeight = floorHeight / numVerticalPistons;
-            float maxPerPistonHeight = ceilingHeight / numVerticalPistons;
-            piston.MinLimit = minPerPistonHeight;
-            piston.MaxLimit = maxPerPistonHeight;
-            piston.Velocity = 0;
-            piston.Enabled = true;
+            if (argument == "init")
+            {
+                if (heightScanInProgress)
+                {
+                    Echo("Cannot initialize pistons: Height scan in progress!");
+                    return;
+                }
+                InitTasks();
+            }
+            else if (argument == "unlock")
+            {
+                if (!TryUnlockSafety())
+                {
+                    Echo("Cannot unlock safety lock: Pistons need initialization! Run 'init' command first.");
+                    return;
+                }
+                Echo("Safety lock disabled.");
+            }
+            else if (argument == "lock")
+            {
+                LockSafety();
+                Echo("Safety lock enabled.");
+            }
+            else if (argument.StartsWith("move "))
+            {
+                if (safetyLock)
+                {
+                    Echo("Cannot move welder: Safety lock is enabled! Run 'unlock' to proceed.");
+                    return;
+                }
+                if (heightScanInProgress)
+                {
+                    Echo("Cannot move welder: Height scan in progress!");
+                    return;
+                }
+                if (ParseMoveCommand(argument))
+                {
+                    Echo("Queued move command: " + argument.Substring(5));
+                }
+            }
+            else if (argument == "abort")
+            {
+                Echo("Aborting movement.");
+                Abort();
+            }
+            else if (argument == "heightscan")
+            {
+                if (safetyLock)
+                {
+                    Echo("Cannot start scan: Safety lock is enabled! Run 'unlock' to proceed.");
+                    return;
+                }
+                if (heightScanInProgress)
+                {
+                    Echo("Height scan already in progress!");
+                    return;
+                }
+                if (sensorOffset < 0f)
+                {
+                    Echo("Cannot start height scan: Sensor offset not set! Run 'autosensor' command first.");
+                    return;
+                }
+                Echo("Initiated height scan process.");
+                InitiateHeightScanProcess();
+            }
+            else if (argument == "autosensor")
+            {
+                if (safetyLock)
+                {
+                    Echo("Cannot auto-calculate sensor offset: Safety lock is enabled! Run 'unlock' to proceed.");
+                    return;
+                }
+                if (sensorOffsetAutoDetectInProgress)
+                {
+                    Echo("Sensor offset auto-calculation already in progress!");
+                    return;
+                }
+                Echo("Initiated sensor offset auto-calculation process.");
+                InitiateAutoCalculateSensorOffset();
+            }
+            else if (argument == "loc")
+            {
+                DebugFindClosestGridByPistonExtensions();
+            }
+            else
+            {
+                Echo("Unknown command: " + argument);
+            }
         }
 
-        void InitHorizontalPiston(IMyPistonBase piston)
+        void Prints()
         {
-            piston.MinLimit = 0.0f;
-            piston.MaxLimit = 10.0f;
-            piston.Velocity = 0;
-            piston.Enabled = true;
+            DebugScreen(debugScreen);
+            DebugScreen(pbScreen);
+            PrintMap();
         }
 
-        void InitHinge(IMyMotorStator hinge)
+        void InitiateHeightScanProcess()
         {
-            hinge.TargetVelocityRPM = 0f;
-            hinge.LowerLimitDeg = -90f;
-            hinge.UpperLimitDeg = 90f;
-            hinge.Enabled = false;
+            heightScanInProgress = true;
+            InitHeightMap();
+            InitiateScanDownProcess();
         }
 
-        void InitSensor(IMySensorBlock sensor)
+        bool HeightScanStep()
         {
-            sensor.Enabled = true;
+            if (scanDownInProgress)
+            {
+                if (HeightScanDownStep(heightScanStep, welderZ * cubeSize + sensorOffset))
+                {
+                    scanDownInProgress = false;
+                }
+                else
+                {
+                    return false;
+                }
+            }
+            List<int> nextPoint = GetClosestUnmeasuredPoint();
+            if (nextPoint[0] == -1 || nextPoint[1] == -1)
+            {
+                Echo("Height scan complete.");
+                heightScanInProgress = false;
+                return true;
+            }
+            List<int> adjacentPoint = GetClosestMeasuredAdjacentPoint(nextPoint[0], nextPoint[1]);
 
-            sensor.FrontExtend = sensorRange;
-            sensor.BackExtend = 0f;
-            sensor.LeftExtend = 0f;
-            sensor.RightExtend = 0f;
-            sensor.TopExtend = 0f;
-            sensor.BottomExtend = 0f;
+            QueueMove(adjacentPoint[0], adjacentPoint[1], welderZ, 1f,
+                description: $"Moving to adjacent measured point ({adjacentPoint[0]}, {adjacentPoint[1]})",
+                onFinish: InitiateScanDownProcess);
+            return false;
+        }
 
-            sensor.DetectSubgrids = true;
-            sensor.DetectLargeShips = true;
-            sensor.DetectSmallShips = true;
-            sensor.DetectStations = true;
-            sensor.DetectOwner = true;
-            sensor.DetectFriendly = true;
-            sensor.DetectNeutral = true;
-            sensor.DetectEnemy = true;
+        void InitiateScanDownProcess()
+        {
+            sensorReadings[Side.Top] = -1f;
+            sensorReadings[Side.Bottom] = -1f;
+            sensorReadings[Side.Left] = -1f;
+            sensorReadings[Side.Right] = -1f;
+            sensorRange = sensorOffset >= 0f ? sensorOffset : 0f;
+            welderSensors[Side.Top].FrontExtend = sensorRange;
+            welderSensors[Side.Bottom].FrontExtend = sensorRange;
+            welderSensors[Side.Left].FrontExtend = sensorRange;
+            welderSensors[Side.Right].FrontExtend = sensorRange;
+            scanDownInProgress = true;
+        }
 
-            sensor.DetectFloatingObjects = false;
-            sensor.DetectAsteroids = false;
-            sensor.DetectPlayers = false;
+        bool HeightScanDownStep(float step, float maxDistance)
+        {
+            if (ReadSensors(step, maxDistance))
+            {
+                int welderX = (int)Math.Round(this.welderX);
+                int welderY = (int)Math.Round(this.welderY);
+                SetEmptyHeightMapPoint(welderX + 1, welderY, DetectionHeight(sensorReadings[Side.Right]));
+                SetEmptyHeightMapPoint(welderX - 1, welderY, DetectionHeight(sensorReadings[Side.Left]));
+                SetEmptyHeightMapPoint(welderX, welderY + 1, DetectionHeight(sensorReadings[Side.Bottom]));
+                SetEmptyHeightMapPoint(welderX, welderY - 1, DetectionHeight(sensorReadings[Side.Top]));
+                return true;
+            }
+            return false;
+        }
+
+        void InitiateAutoCalculateSensorOffset()
+        {
+            sensorOffset = -1f;
+            sensorOffsetAutoDetectInProgress = true;
+            int welderX = (int)Math.Round(this.welderX);
+            int welderY = (int)Math.Round(this.welderY);
+            QueueMove(welderX, welderY, 0f, 1f,
+                description: "Moving welder to Z=0 for sensor offset calibration",
+                onFinish: InitiateScanDownProcess);
+        }
+
+        void AutoCalculateSensorOffsetStep()
+        {
+            float maxOffset = 3 * cubeSize; // sensor offset arbitrarily assumed within 7.5m
+            if (ReadSensors(0.01f, maxOffset))
+            {
+                if (sensorReadings[Side.Top] == maxOffset ||
+                    sensorReadings[Side.Bottom] == maxOffset ||
+                    sensorReadings[Side.Left] == maxOffset ||
+                    sensorReadings[Side.Right] == maxOffset)
+                {
+                    throw new Exception($"Auto-calculation of sensor offset failed: one or more sensors did not detect ground within max range {maxOffset}m.");
+                }
+                float topHeight = sensorReadings[Side.Top];
+                float bottomHeight = sensorReadings[Side.Bottom];
+                float leftHeight = sensorReadings[Side.Left];
+                float rightHeight = sensorReadings[Side.Right];
+                float averageHeight = (topHeight + bottomHeight + leftHeight + rightHeight) / 4f;
+                sensorOffset = averageHeight;
+                Echo($"Auto-calculated sensor offset: {sensorOffset:F2} m");
+                sensorOffsetAutoDetectInProgress = false;
+                scanDownInProgress = false;
+            }
+        }
+        bool ReadSensors(float step, float maxDistance)
+        {
+            int measuredSides = 0;
+            foreach (Side side in sides)
+            {
+                if (sensorReadings[side] >= 0f)
+                {
+                    measuredSides++;
+                    continue;
+                }
+                if (welderSensors[side].IsActive)
+                {
+                    sensorReadings[side] = sensorRange;
+                    measuredSides++;
+                }
+            }
+            if (measuredSides == sides.Count)
+            {
+                return true;
+            }
+            if (sensorRange >= maxDistance)
+            {
+                for (Side side = Side.Top; side <= Side.Right; side++)
+                {
+                    if (sensorReadings[side] < 0f)
+                    {
+                        sensorReadings[side] = maxDistance; // no detection within max range
+                    }
+                }
+                return true;
+            }
+            sensorRange += step;
+            welderSensors[Side.Top].FrontExtend = sensorRange;
+            welderSensors[Side.Bottom].FrontExtend = sensorRange;
+            welderSensors[Side.Left].FrontExtend = sensorRange;
+            welderSensors[Side.Right].FrontExtend = sensorRange;
+
+            return false;
+        }
+
+        bool TryUnlockSafety()
+        {
+            if (NeedsInitialization())
+            {
+                return false;
+            }
+            safetyLock = false;
+            return true;
+        }
+
+        void LockSafety()
+        {
+            Abort();
+            safetyLock = true;
         }
 
         Dictionary<Corner, float> PistonExtensions(float welderX, float welderY)
@@ -588,110 +690,6 @@ namespace IngameScript
             piston.Velocity = velocity;
             return actualTime;
         }
-
-        void InitiateAutoCalculateSensorOffset()
-        {
-            sensorOffset = -1f;
-            sensorOffsetAutoDetectInProgress = true;
-            int welderX = (int)Math.Round(this.welderX);
-            int welderY = (int)Math.Round(this.welderY);
-            QueueMove(welderX, welderY, 0f, 1f,
-                description: "Moving welder to Z=0 for sensor offset calibration",
-                onFinish: InitiateScanDownProcess);
-        }
-
-        void AutoCalculateSensorOffsetStep()
-        {
-            float maxOffset = 3 * cubeSize; // sensor offset arbitrarily assumed within 7.5m
-            if(ReadSensors(0.01f, maxOffset))
-            {
-                if (sensorReadings[Side.Top] == maxOffset ||
-                    sensorReadings[Side.Bottom] == maxOffset ||
-                    sensorReadings[Side.Left] == maxOffset ||
-                    sensorReadings[Side.Right] == maxOffset)
-                {
-                    throw new Exception($"Auto-calculation of sensor offset failed: one or more sensors did not detect ground within max range {maxOffset}m.");
-                }
-                float topHeight = sensorReadings[Side.Top];
-                float bottomHeight = sensorReadings[Side.Bottom];
-                float leftHeight = sensorReadings[Side.Left];
-                float rightHeight = sensorReadings[Side.Right];
-                float averageHeight = (topHeight + bottomHeight + leftHeight + rightHeight) / 4f;
-                sensorOffset = averageHeight;
-                Echo($"Auto-calculated sensor offset: {sensorOffset:F2} m");
-                sensorOffsetAutoDetectInProgress = false;
-                scanDownInProgress = false;
-            }
-        }
-
-        void InitiateScanDownProcess()
-        {
-            sensorReadings[Side.Top] = -1f;
-            sensorReadings[Side.Bottom] = -1f;
-            sensorReadings[Side.Left] = -1f;
-            sensorReadings[Side.Right] = -1f;
-            sensorRange = sensorOffset >= 0f ? sensorOffset : 0f;
-            welderSensors[Side.Top].FrontExtend = sensorRange;
-            welderSensors[Side.Bottom].FrontExtend = sensorRange;
-            welderSensors[Side.Left].FrontExtend = sensorRange;
-            welderSensors[Side.Right].FrontExtend = sensorRange;
-            scanDownInProgress = true;
-        }
-
-        bool ReadSensors(float step, float maxDistance)
-        {
-            int measuredSides = 0;
-            foreach (Side side in sides)
-            {
-                if (sensorReadings[side] >= 0f)
-                {
-                    measuredSides++;
-                    continue;
-                }
-                if (welderSensors[side].IsActive)
-                {
-                    sensorReadings[side] = sensorRange;
-                    measuredSides++;
-                }
-            }
-            if (measuredSides == sides.Count)
-            {
-                return true;
-            }
-            if (sensorRange >= maxDistance)
-            {
-                for (Side side = Side.Top; side <= Side.Right; side++)
-                {
-                    if (sensorReadings[side] < 0f)
-                    {
-                        sensorReadings[side] = maxDistance; // no detection within max range
-                    }
-                }
-                return true;
-            }
-            sensorRange += step;
-            welderSensors[Side.Top].FrontExtend = sensorRange;
-            welderSensors[Side.Bottom].FrontExtend = sensorRange;
-            welderSensors[Side.Left].FrontExtend = sensorRange;
-            welderSensors[Side.Right].FrontExtend = sensorRange;
-
-            return false;
-        }
-
-        bool HeightScanDownStep(float step, float maxDistance)
-        {
-            if (ReadSensors(step, maxDistance))
-            {
-                int welderX = (int)Math.Round(this.welderX);
-                int welderY = (int)Math.Round(this.welderY);
-                SetEmptyHeightMapPoint(welderX + 1, welderY, DetectionHeight(sensorReadings[Side.Right]));
-                SetEmptyHeightMapPoint(welderX - 1, welderY, DetectionHeight(sensorReadings[Side.Left]));
-                SetEmptyHeightMapPoint(welderX, welderY + 1, DetectionHeight(sensorReadings[Side.Bottom]));
-                SetEmptyHeightMapPoint(welderX, welderY - 1, DetectionHeight(sensorReadings[Side.Top]));
-                return true;
-            }
-            return false;
-        }
         float DetectionHeight(float sensorReadout)
         {
             if (sensorOffset < 0f)
@@ -708,41 +706,6 @@ namespace IngameScript
                 return;
             }
             heightMap[y][x] = height;
-        }
-
-        bool HeightScanStep()
-        {
-            if (scanDownInProgress)
-            {
-                if (HeightScanDownStep(heightScanStep, welderZ * cubeSize + sensorOffset))
-                {
-                    scanDownInProgress = false;
-                }
-                else
-                {
-                    return false;
-                }
-            }
-            List<int> nextPoint = GetClosestUnmeasuredPoint();
-            if (nextPoint[0] == -1 || nextPoint[1] == -1)
-            {
-                Echo("Height scan complete.");
-                heightScanInProgress = false;
-                return true;
-            }
-            List<int> adjacentPoint = GetClosestMeasuredAdjacentPoint(nextPoint[0], nextPoint[1]);
-
-            QueueMove(adjacentPoint[0], adjacentPoint[1], welderZ, 1f,
-                description: $"Moving to adjacent measured point ({adjacentPoint[0]}, {adjacentPoint[1]})",
-                onFinish: InitiateScanDownProcess);
-            return false;
-        }
-
-        void InitiateHeightScanProcess()
-        {
-            heightScanInProgress = true;
-            InitHeightMap();
-            InitiateScanDownProcess();
         }
 
         List<int> GetClosestUnmeasuredPoint()
@@ -841,14 +804,6 @@ namespace IngameScript
             taskTimeLeft = 0f;
             taskQueue.Clear();
         }
-        /// <summary>
-        /// Calculates the accuracy of the current welder position compared to the target position
-        /// based on the piston extensions.
-        /// </summary>
-        /// <param name="x">X target position</param>
-        /// <param name="y">Y target position</param>
-        /// <param name="z">Z target position</param>
-        /// <returns>Accuracy as a float between 0 and 1</returns>
         float CalculateAccuracy(float x, float y, float z)
         {
             float totalCalculatedDistance = 0f;
@@ -870,22 +825,6 @@ namespace IngameScript
                 }
             }
             return 1f - error / totalCalculatedDistance;
-        }
-
-        bool TryUnlockSafety()
-        {
-            if (NeedsInitialization())
-            {
-                return false;
-            }
-            safetyLock = false;
-            return true;
-        }
-
-        void LockSafety()
-        {
-            Abort();
-            safetyLock = true;
         }
 
         bool ParseMoveCommand(string argument)
@@ -968,98 +907,6 @@ namespace IngameScript
             });
         }
 
-        void ParseCommand(string argument)
-        {
-            if (argument == "init")
-            {
-                if (heightScanInProgress)
-                {
-                    Echo("Cannot initialize pistons: Height scan in progress!");
-                    return;
-                }
-                InitTasks();
-            }
-            else if (argument == "unlock")
-            {
-                if (!TryUnlockSafety())
-                {
-                    Echo("Cannot unlock safety lock: Pistons need initialization! Run 'init' command first.");
-                    return;
-                }
-                Echo("Safety lock disabled.");
-            }
-            else if (argument == "lock")
-            {
-                LockSafety();
-                Echo("Safety lock enabled.");
-            }
-            else if (argument.StartsWith("move "))
-            {
-                if (safetyLock)
-                {
-                    Echo("Cannot move welder: Safety lock is enabled! Run 'unlock' to proceed.");
-                    return;
-                }
-                if (heightScanInProgress)
-                {
-                    Echo("Cannot move welder: Height scan in progress!");
-                    return;
-                }
-                if (ParseMoveCommand(argument))
-                {
-                    Echo("Queued move command: " + argument.Substring(5));
-                }
-            }
-            else if (argument == "abort")
-            {
-                Echo("Aborting movement.");
-                Abort();
-            }
-            else if (argument == "heightscan")
-            {
-                if (safetyLock)
-                {
-                    Echo("Cannot start scan: Safety lock is enabled! Run 'unlock' to proceed.");
-                    return;
-                }
-                if (heightScanInProgress)
-                {
-                    Echo("Height scan already in progress!");
-                    return;
-                }
-                if (sensorOffset < 0f)
-                {
-                    Echo("Cannot start height scan: Sensor offset not set! Run 'autosensor' command first.");
-                    return;
-                }
-                Echo("Initiated height scan process.");
-                InitiateHeightScanProcess();
-            }
-            else if (argument == "autosensor")
-            {
-                if (safetyLock)
-                {
-                    Echo("Cannot auto-calculate sensor offset: Safety lock is enabled! Run 'unlock' to proceed.");
-                    return;
-                }
-                if (sensorOffsetAutoDetectInProgress)
-                {
-                    Echo("Sensor offset auto-calculation already in progress!");
-                    return;
-                }
-                Echo("Initiated sensor offset auto-calculation process.");
-                InitiateAutoCalculateSensorOffset();
-            }
-            else if (argument == "loc")
-            {
-                DebugFindClosestGridByPistonExtensions();
-            }
-            else
-            {
-                Echo("Unknown command: " + argument);
-            }
-        }
-
         void PrintMap()
         {
             mapScreen.WriteText("Welder Reachability Map\n");
@@ -1127,13 +974,6 @@ namespace IngameScript
             }
         }
 
-        void Prints()
-        {
-            DebugScreen(debugScreen);
-            DebugScreen(pbScreen);
-            PrintMap();
-        }
-
         void UpdateStatusLights()
         {
             foreach (IMyLightingBlock light in statusLights)
@@ -1153,119 +993,264 @@ namespace IngameScript
             }
         }
 
-        void InitTasks()
+        void ScanReachable()
         {
-            safetyLock = false;
-            Echo("Unlocking safety lock for initialization.");
-            if (!NeedsInitialization())
+            float closestDistance = float.MaxValue;
+            for (int y = 0; y < areaHeight; y++)
             {
-                Echo("Pistons are already initialized.");
-                return;
-            }
-            QueueEqualizeAllPistons(0f);
-            QueueMove((int)Math.Round(welderX), (int)Math.Round(welderY), welderZ, 1f,
-                description: "Final move to current welder position after piston equalization",
-                onFinish: () =>
+                reachableGridPoints.Add(new List<bool>());
+                for (int x = 0; x < areaWidth; x++)
                 {
-                    if (!NeedsInitialization())
+                    Dictionary<Corner, float> extensions = PistonExtensions(x, y);
+                    bool reachable = true;
+                    float distSum = 0f;
+                    foreach (Corner corner in corners)
                     {
-                        Echo("Pistons successfully initialized.");
-                        if (!Me.CustomData.Contains(autoUnlockCommand))
+                        float extension = extensions[corner];
+                        if (extension < 0f || extension > 10f)
                         {
-                            safetyLock = true;
-                            Echo("Safety lock enabled after initialization. Run 'unlock' command to proceed.");
+                            reachable = false;
+                            break;
+                        }
+                        foreach (IMyPistonBase piston in horizontalPistonLists[corner])
+                        {
+                            distSum += (float)Math.Pow(Math.Abs(piston.CurrentPosition - extension), 2);
                         }
                     }
-                    else
+                    if (distSum < closestDistance && reachable)
                     {
-                        Echo("Piston initialization failed: Pistons are still misaligned!");
-                        safetyLock = true;
+                        closestDistance = distSum;
+                        welderX = x;
+                        welderY = y;
                     }
-                });
+                    reachableGridPoints[y].Add(reachable);
+                    heightMap[y][x] = -2f;
+                }
+            }
         }
 
-        bool NeedsInitialization()
+        void InitHeightMap()
         {
+            heightMap.Clear();
+            for (int y = 0; y < areaHeight; y++)
+            {
+                heightMap.Add(new List<float>());
+                for (int x = 0; x < areaWidth; x++)
+                {
+                    heightMap[y].Add(-1f);
+                }
+            }
+        }
+
+        bool IsReachable(float targetX, float targetY, float targetZ)
+        {
+            float tolerance = 0.01f;
+            int xInt = (int)Math.Round(targetX);
+            int yInt = (int)Math.Round(targetY);
+            float deltaX = targetX - xInt;
+            float deltaY = targetY - yInt;
+            if (xInt < 0 || xInt >= areaWidth || yInt < 0 || yInt >= areaHeight)
+            {
+                return false;
+            }
+            if (deltaX > 0 + tolerance)
+            {
+                if (xInt + 1 >= areaWidth || !reachableGridPoints[yInt][xInt + 1])
+                {
+                    Echo("X+ out of bounds or unreachable");
+                    return false;
+                }
+            }
+            else if (deltaX < 0 - tolerance)
+            {
+                if (xInt - 1 < 0 || !reachableGridPoints[yInt][xInt - 1])
+                {
+                    Echo("X- out of bounds or unreachable");
+                    return false;
+                }
+            }
+            if (deltaY > 0 + tolerance)
+            {
+                if (yInt + 1 >= areaHeight || !reachableGridPoints[yInt + 1][xInt])
+                {
+                    Echo("Y+ out of bounds or unreachable");
+                    return false;
+                }
+            }
+            else if (deltaY < 0 - tolerance)
+            {
+                if (yInt - 1 < 0 || !reachableGridPoints[yInt - 1][xInt])
+                {
+                    Echo("Y- out of bounds or unreachable");
+                    return false;
+                }
+            }
+
+            if (targetZ < 0f || targetZ > maxZ)
+            {
+                Echo($"Z{(targetZ < 0 ? "-" : "+")} out of bounds");
+                return false;
+            }
+            return reachableGridPoints[yInt][xInt];
+        }
+
+        float GetAverageZ()
+        {
+            float totalHeight = 0f;
             foreach (Corner corner in corners)
             {
-                float averageExtension = 0f;
-                foreach (IMyPistonBase piston in horizontalPistonLists[corner])
+                foreach (IMyPistonBase piston in verticalPistonLists[corner])
                 {
-                    averageExtension += piston.CurrentPosition;
+                    totalHeight += piston.CurrentPosition;
                 }
-                averageExtension /= horizontalPistonLists[corner].Count;
-                foreach (IMyPistonBase piston in horizontalPistonLists[corner])
-                {
-                    if (Math.Abs(piston.CurrentPosition - averageExtension) > 0.01f)
-                    {
-                        return true;
-                    }
-                }
+            }
+            return (totalHeight / corners.Count - floorHeight) / cubeSize;
+        }
 
-                float averageHeight = 0f;
-                foreach (IMyPistonBase piston in verticalPistonLists[corner])
+
+        List<IMyPistonBase> GetHorizontalPistons(string name)
+        {
+            List<IMyPistonBase> pistons = new List<IMyPistonBase>();
+            for (int i = 0; i < numHorizontalPistons; i++)
+            {
+                pistons.Add(GetBlock(name + " " + (i + 1)) as IMyPistonBase);
+                InitHorizontalPiston(pistons[i]);
+            }
+            return pistons;
+        }
+
+        List<IMyPistonBase> GetVerticalPistons(string name)
+        {
+            List<IMyPistonBase> pistons = new List<IMyPistonBase>();
+            for (int i = 0; i < numVerticalPistons; i++)
+            {
+                pistons.Add(GetBlock(name + " " + (i + 1)) as IMyPistonBase);
+                InitVerticalPiston(pistons[i]);
+            }
+            return pistons;
+        }
+
+        IMyMotorStator GetHinge(string name)
+        {
+            IMyMotorStator hinge = GetBlock(name) as IMyMotorStator;
+            InitHinge(hinge);
+            return hinge;
+        }
+
+        IMySensorBlock GetSensor(string name)
+        {
+            IMySensorBlock sensor = GetBlock(name) as IMySensorBlock;
+            InitSensor(sensor);
+            return sensor;
+        }
+
+        IMyTerminalBlock GetBlock(string name)
+        {
+            IMyTerminalBlock block = GridTerminalSystem.GetBlockWithName(name);
+            if (block == null)
+            {
+                throw new Exception("Could not find block: " + name);
+            }
+            return block;
+        }
+
+        void InitVerticalPiston(IMyPistonBase piston)
+        {
+            float minPerPistonHeight = floorHeight / numVerticalPistons;
+            float maxPerPistonHeight = ceilingHeight / numVerticalPistons;
+            piston.MinLimit = minPerPistonHeight;
+            piston.MaxLimit = maxPerPistonHeight;
+            piston.Velocity = 0;
+            piston.Enabled = true;
+        }
+
+        void InitHorizontalPiston(IMyPistonBase piston)
+        {
+            piston.MinLimit = 0.0f;
+            piston.MaxLimit = 10.0f;
+            piston.Velocity = 0;
+            piston.Enabled = true;
+        }
+
+        void InitHinge(IMyMotorStator hinge)
+        {
+            hinge.TargetVelocityRPM = 0f;
+            hinge.LowerLimitDeg = -90f;
+            hinge.UpperLimitDeg = 90f;
+            hinge.Enabled = false;
+        }
+
+        void InitSensor(IMySensorBlock sensor)
+        {
+            sensor.Enabled = true;
+
+            sensor.FrontExtend = sensorRange;
+            sensor.BackExtend = 0f;
+            sensor.LeftExtend = 0f;
+            sensor.RightExtend = 0f;
+            sensor.TopExtend = 0f;
+            sensor.BottomExtend = 0f;
+
+            sensor.DetectSubgrids = true;
+            sensor.DetectLargeShips = true;
+            sensor.DetectSmallShips = true;
+            sensor.DetectStations = true;
+            sensor.DetectOwner = true;
+            sensor.DetectFriendly = true;
+            sensor.DetectNeutral = true;
+            sensor.DetectEnemy = true;
+
+            sensor.DetectFloatingObjects = false;
+            sensor.DetectAsteroids = false;
+            sensor.DetectPlayers = false;
+        }
+        void DebugFindClosestGridByPistonExtensions()
+        {
+            float smallestError = float.MaxValue;
+            int bestX = -1;
+            int bestY = -1;
+
+            for (int y = 0; y < areaHeight; y++)
+            {
+                for (int x = 0; x < areaWidth; x++)
                 {
-                    averageHeight += piston.CurrentPosition;
-                }
-                averageHeight /= verticalPistonLists[corner].Count;
-                foreach (IMyPistonBase piston in verticalPistonLists[corner])
-                {
-                    if (Math.Abs(piston.CurrentPosition - averageHeight) > 0.01f)
+                    Dictionary<Corner, float> extensions = PistonExtensions(x, y);
+                    bool valid = true;
+                    float squaredErrorSum = 0f;
+                    foreach (Corner corner in corners)
                     {
-                        return true;
+                        float extension = extensions[corner];
+                        if (extension < 0f || extension > 10f)
+                        {
+                            valid = false;
+                            break;
+                        }
+                        foreach (IMyPistonBase piston in horizontalPistonLists[corner])
+                        {
+                            float diff = piston.CurrentPosition - extension;
+                            squaredErrorSum += diff * diff;
+                        }
+                    }
+                    if (!valid) continue;
+                    if (squaredErrorSum < smallestError)
+                    {
+                        smallestError = squaredErrorSum;
+                        bestX = x;
+                        bestY = y;
                     }
                 }
             }
-            return CalculateAccuracy(welderX, welderY, welderZ) < 0.99f;
-        }
 
-        void Update()
-        {
-            if (taskTimeLeft > 0)
+            if (bestX == -1)
             {
-                taskTimeLeft -= (float)Runtime.TimeSinceLastRun.TotalSeconds;
-                if (taskTimeLeft < 0)
-                {
-                    taskTimeLeft = 0f;
-                    currentTask.finish();
-                }
+                Echo("DebugFindClosestGrid: no valid grid point found (all extensions out of range)");
                 return;
             }
-            else if (taskQueue.Count > 0)
-            {
-                currentTask = taskQueue.Dequeue();
-                taskTimeLeft = currentTask.execute();
-                if (taskTimeLeft == 0f)
-                {
-                    currentTask.finish();
-                }
-            }
-            else if (sensorOffsetAutoDetectInProgress)
-            {
-                AutoCalculateSensorOffsetStep();
-            }
-            else if (heightScanInProgress)
-            {
-                HeightScanStep();
-            }
-            UpdateStatusLights();
-        }
 
-        public void Main(string argument, UpdateType updateSource)
-        {
-            debugScreen.WriteText("", false);
-            mapScreen.WriteText("", false);
-            pbScreen.WriteText("", false);
-
-            if (!string.IsNullOrEmpty(argument))
-            {
-                ParseCommand(argument);
-            }
-
-            Update();
-
-            Prints();
-
+            double gridDistance = Math.Sqrt(Math.Pow(bestX - welderX, 2) + Math.Pow(bestY - welderY, 2));
+            Echo($"DebugFindClosestGrid: closest = ({bestX}, {bestY}) with squared error sum {smallestError:F4}");
+            Echo($"Current welder pos = ({welderX}, {welderY}), grid distance = {gridDistance:F2}");
+            Echo($"Current accuracy = {CalculateAccuracy(welderX, welderY, welderZ):P2}");
         }
     }
 }
